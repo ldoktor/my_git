@@ -993,6 +993,36 @@ class DevContainer(object):
                     % (device, self, err))
         return True
 
+    def cmdline(self):
+        """
+        Creates cmdline arguments for creating all defined devices
+        @return: cmdline of all devices (without qemu-cmd itself)
+        """
+        out = ""
+        for device in self.__devices:
+            if device.cmdline():
+                out += " %s" % device.cmdline()
+        return out
+
+    def readconfig(self):
+        """
+        Creates -readconfig-like config for all defined devices.
+        @return: list, where first item is -readconfig-like config for all
+                 inserted devices. and second item are cmdline options of
+                 devices, which don't have -readconfig fmt specified
+        """
+        out = ["", ""]
+        for device in self.__devices:
+            if device.readconfig():
+                out[0] += "%s\n\n" % device.readconfig()
+            elif device.cmdline():
+                out[1] += "%s  "
+        if out[0]:
+            out[0] = out[0][:-2]
+        if out[1]:
+            out[1] = out[1][:-1]
+        return out
+
 
 if __name__ == "__main__":
     a = DevContainer(HELP, DEVICES, VM())
@@ -1008,7 +1038,7 @@ if __name__ == "__main__":
     # ...
     print a.insert(dev1)
     """
-    devs = a.usbs.define_by_variables('myusb1', 'ich9-usb-uhci1',max_ports=2)
+    devs = a.usbs.define_by_variables('myusb1', 'ich9-usb-uhci1', max_ports=2)
     for dev in devs:
         print "1: %s" % a.insert(dev)
     # 0) is VM running? is hotpluggable? ... etc.
@@ -1030,6 +1060,8 @@ if __name__ == "__main__":
     dev3 = QDevice()
     dev3.child_bus = QAHCIBus('ahci1')
     dev3.parent_bus = {'type': 'pci'}
+    dev3.set_param('driver', 'ahci')
+    dev3.set_param('id', 'ahci1')
     print "3: %s" % a.insert(dev3)
     # -drive file=/tmp/aaa,id=bbb,if=none
     dev4 = QDrive(aobject='stg1')
@@ -1043,7 +1075,13 @@ if __name__ == "__main__":
     dev5.set_param('unit', 1)
     dev5.parent_bus = ({'type': '__QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
+    print "=" * 80
     print a.str_bus_long()
+    print "=" * 80
+    print a.cmdline()
+    print "=" * 80
+    print a.readconfig()[1]
+    print a.readconfig()[0]
     while True:
         buf = raw_input()
         try:
