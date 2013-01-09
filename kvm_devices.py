@@ -640,6 +640,11 @@ class QDense1DBus(QBaseBus):
 
 class QUSBBus(QDense1DBus):
     def __init__(self, length, busid, bus_type, aobject=None):
+        # FIXME: For compatibility reasons keep the USB types uhci,ehci,...
+        for bus in 'uhci ehci ohci xhci'.split():
+            if bus in bus_type:
+                bus_type = bus
+                break
         super(QUSBBus, self).__init__('bus', 'port', length, busid, bus_type,
                                       aobject)
 
@@ -1003,7 +1008,7 @@ if __name__ == "__main__":
     # ...
     print a.insert(dev1)
     """
-    devs = a.usbs.define_by_variables('myusb1', 'ich9-usb-ehci1')
+    devs = a.usbs.define_by_variables('myusb1', 'ich9-usb-uhci1',max_ports=2)
     for dev in devs:
         print "1: %s" % a.insert(dev)
     # 0) is VM running? is hotpluggable? ... etc.
@@ -1017,8 +1022,9 @@ if __name__ == "__main__":
     # -device usb-mouse
     dev2 = QDevice(aobject='mouse1')
     dev2.set_param('driver', 'usb-mouse')
-    dev2.set_param('port', 2)
-    dev2.parent_bus = {'aobject': 'myusb1'}
+    dev2.set_param('port', 1)
+    #dev2.parent_bus = {'aobject': 'myusb1'}
+    dev2.parent_bus = {'type': 'uhci'}
     print "2: %s" % a.insert(dev2)
     # -device ahci,id=ahci
     dev3 = QDevice()
