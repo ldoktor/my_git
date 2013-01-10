@@ -92,6 +92,167 @@ class QDevUsbs(object):
                                         params.get('pci_addr'))
 
 
+class QDevImages(object):
+    """
+    Helper for defining images.
+    @warning: In order to create indexes (HBAs, disk ids) properly you have to
+              insert device into qdev before creating another disk device!
+    """
+    def __init__(self, qdev):
+        self.qdev = qdev
+
+    def define_by_variables(self, name, filename, index=None, fmt=None,
+                      cache=None, werror=None, rerror=None, serial=None,
+                      snapshot=None, boot=None, blkdebug=None, bus=None,
+                      unit=None, port=None, bootindex=None, removable=None,
+                      min_io_size=None, opt_io_size=None,
+                      physical_block_size=None, logical_block_size=None,
+                      readonly=None, scsiid=None, lun=None, aio=None,
+                      strict_mode=None, media=None, imgfmt=None,
+                      pci_addr=None, scsi_hba="virtio-scsi-pci"):
+        # All related devices
+        devices = []
+
+        supports_device = self.qdev.has_option("device")
+
+        if strict_mode is None:
+            strict_mode = self.qdev.strict_mode
+        if strict_mode:
+            if cache is None:       cache = "none"
+            if removable is None:   removable = "no"
+            if aio is None:         aio = "native"
+            if media is None:       media = "disk"
+
+        # TODO: Unify drive params
+        bus = NoneOrInt(bus)     # First level
+        unit = NoneOrInt(unit)   # Second level
+        port = NoneOrInt(port)   # Third level
+        # Compatibility with old params - scsiid, lun
+        if unit is None:
+            unit = NoneOrInt(scsiid)
+        if port is None:
+            port = NoneOrInt(lun)
+
+        # fmt: ide, scsi, virtio, scsi-hd, ahci, usb1,2,3 + hba
+        # device: ide-drive, usb-storage, scsi-hd, scsi-cd, virtio-blk-pci
+        # bus: ahci, virtio-scsi-pci, USB
+
+        # HBA
+        if not supports_device:
+            # TODO: Add bus representation as it's added automatically
+            # if ide: only 1x
+            # if scsi: when not free add next
+            pass
+        elif fmt == "ahci":
+            _bus = bus
+            if bus is None:    # None
+                #@return: name of matching free bus | index of next bus
+                bus = self.qdev.get_first_free_bus({'type': 'ahci'},
+                                                   (unit, port))
+                if bus is None:
+                    bus = self.qdev.idx_of_next_named_bus('ahci')
+                else:
+                    bus = bus.busid
+            if isinstance(bus, int):    # Bus might not yet exist
+                for bus_name in self.qdev.list_missing_named_buses('ahci',
+                                                        'ahci', bus + 1):
+                    devices.append(QDevice({'id': bus_name, 'driver': 'ahci'},
+                                           None, {'type': 'pci'},
+                                           QAHCIBus(bus_name, name)))
+                bus = 'ahci%d' % bus
+                if unit is not None:
+                    bus += '.%d' % unit
+            if unit is None and _bus is None:
+                bus = None  # Don't assign bus when addr=(None, None)
+        # Drive
+        # TODO: Add QRHDrive and PCIDrive for hotplug purposes
+        devices.append(QDrive(name))
+        devices[-1].set_param('if', 'none')
+        devices[-1].set_param('cache', cache)
+        devices[-1].set_param('rerror', rerror)
+        devices[-1].set_param('werror', werror)
+        devices[-1].set_param('serial', serial)
+        devices[-1].set_param('boot', boot, bool)
+        devices[-1].set_param('snapshot', snapshot, bool)
+        devices[-1].set_param('readonly', readonly, bool)
+        devices[-1].set_param('aio', aio)
+        devices[-1].set_param('media', media)
+        devices[-1].set_param('format', imgfmt)
+        if blkdebug is not None:
+            devices[-1].set_param('file', 'blkdebug:%s:%s' % (blkdebug,
+                                                              filename))
+        else:
+            devices[-1].set_param('file', filename)
+        if not supports_device:
+            if fmt not in ('ide', 'scsi', 'sd', 'mtd', 'floppy', 'pflash',
+                           'virtio'):
+                raise virt_vm.VMDeviceNotSupportedError(self.qdev.vmname,
+                                                        fmt)
+            devices[-1].set_param('if', fmt)
+            devices[-1].set_param('index', index)
+            devices[-1].parent_bus += ({'type': fmt},)
+            if fmt == 'virtio':
+                devices[-1].set_param('addr', pci_addr)
+                devices[-1].parent_bus += ({'type': 'pci'},)
+
+        # Device
+        devices.append(QDevice({}, name))
+        devices[-1].parent_bus += ({'busid': 'drive_%s' % name},)   # drive
+        devices[-1].set_param('bus', bus)
+        devices[-1].set_param('drive', 'drive_%s' % name)
+        devices[-1].set_param('logical_block_size', logical_block_size)
+        devices[-1].set_param('physical_block_size', physical_block_size)
+        devices[-1].set_param('min_io_size', min_io_size)
+        devices[-1].set_param('bootindex', bootindex)
+        if fmt != 'virtio':
+            devices[-1].set_param('serial', serial)
+            devices[-1].set_param('removable', removable)
+        if not fmt.startswith('scsi-'): # scsi sets hba later in the code
+            devices[-1].parent_bus += ({'type': fmt},)  # hba
+        if fmt == "ahci":
+            devices[-1].set_param('driver', 'ide-drive')
+            devices[-1].set_param('unit', port)
+
+        return devices
+
+    def define_by_params(self, params, force_media=None, strict_mode=None):
+        """
+        Process disk arguments to qemu -drive command.
+        @note: To skip the argument use None, to disable it use False
+        @note: Strictly bool options accept "yes", "on" and True ("no"...)
+        @note: Options starting with '_' are optional and used only when
+               strict_mode == True
+        @param hlp: qemu -h output
+        @param filename: Path to the disk file
+        @param index: drive index (used for generating names)
+        @param fmt: drive subsystem type (ide, scsi, virtio, usb2, ...)
+        @param cache: disk cache (none, writethrough, writeback)
+        @param werror: What to do when write error occurs (stop, ...)
+        @param rerror: What to do when read error occurs (stop, ...)
+        @param serial: drive serial number ($string)
+        @param snapshot: use snapshot? ($bool)
+        @param boot: is bootable? ($bool)
+        @param blkdebug: use blkdebug (None, blkdebug_filename)
+        @param bus: bus on which this drive is located ($string)
+        @param port: port on which this drive is located ($string)
+        @param bootindex: device boot priority ($int)
+        @param removable: can the drive be removed? ($bool)
+        @param min_io_size: Min allowed io size
+        @param opt_io_size: Optimal io size
+        @param physical_block_size: set physical_block_size ($int)
+        @param logical_block_size: set logical_block_size ($int)
+        @param readonly: set the drive readonly ($bool)
+        @param scsiid: set drive scsi_id ($int)
+        @param lun: set the drive lun ($int)
+        @param aio: set the type of async IO (native, threads, ..)
+        @param strict_mode: enforce parameters starting with '_' ($bool)
+        @param media: type of the media (disk, cdrom, ...)
+        @param imgfmt: image format (qcow2, raw, ...)
+        @param pci_addr: drive pci address ($int)
+        """
+        pass
+
+
 class QBaseDevice(object):
     """ Base class of qemu objects """
     def __init__(self, dev_type="QBaseDevice", params={}, aobject=None,
@@ -126,7 +287,7 @@ class QBaseDevice(object):
                 self.params[option] = "off"
         elif value and isinstance(value, bool):
             self.params[option] = "on"
-        elif value:
+        elif value or value == 0:
             self.params[option] = value
         elif value is None and option in self.params:
             del(self.params[option])
@@ -429,6 +590,9 @@ class QBaseBus(object):
             out = "%s\n" % self.badbus
         return out
 
+    def _get_free_slot(self, addr):
+        raise NotImplementedError
+
     def _insert_oor(self, device, addr):
         if addr in self.badbus:
             i = 0
@@ -541,7 +705,7 @@ class QDense1DBus(QBaseBus):
         else:
             return str(addr)
 
-    def _param2addr(self, device):
+    def _dev2addr(self, device):
         return NoneOrInt(device.get_param(self.addr_item))
 
     def _get_free_slot(self, addr):
@@ -592,7 +756,7 @@ class QDense1DBus(QBaseBus):
                 device.set_param(self.bus_item, self.busid)
             else:
                 return False
-        _addr = self._param2addr(device)
+        _addr = self._dev2addr(device)
         addr = self._get_free_slot(_addr)
         if addr is None:
             if force:
@@ -659,7 +823,7 @@ class QPCIBus(QDense1DBus):
         else:
             return hex(addr)
 
-    def _param2addr(self, device):
+    def _dev2addr(self, device):
         addr = device.get_param(self.addr_item)
         if addr is None:
             return None
@@ -683,21 +847,34 @@ class QAHCIBus(QDense1DBus):
         device.set_param('unit', addr % 2)
 
     def _check_bus(self, device):
-        if (device.get_param('bus') and
-                    device.get_param('bus').rsplit('.', 1)[0] != self.busid):
-            return False
-        else:
-            return True
+        bus = device.get_param('bus')
+        if isinstance(bus, str):
+            bus = bus.rsplit('.', 1)
+            if len(bus) == 2 and bus[0] != self.busid:  # aaa.3
+                return False
+            elif not bus[0].isdigit() and bus[0] != self.busid:     # aaa
+                return False
+        return True # None, 5, '3'
 
-    def _param2addr(self, device):
-        bus = None
+    def _dev2addr(self, device):
         unit = None
-        if device.get_param('bus'):
-            bus = device.get_param('bus').rsplit('.', 1)
-            if bus[-1].isdigit():
-                bus = int(bus[-1])
+        port = None
+        bus = device.get_param('bus')
+        if isinstance(bus, str):
+            if bus.isdigit():
+                unit = int(bus)
+            else:
+                bus = bus.rsplit('.', 1)
+                if len(bus) == 2 and bus[1].isdigit():
+                    unit = int(bus[1])
+        if isinstance(bus, int):
+            unit = bus
         if device.get_param('unit'):
-            unit = int(device.get_param('unit'))
+            port = int(device.get_param('unit'))
+        return self._param2addr((unit, port))
+
+    def _param2addr(self, param=(None, None)):
+        bus, unit = param
         if bus is not None and unit is not None:
             return 2 * bus + unit
         elif bus is not None:
@@ -788,7 +965,7 @@ class DevContainer(object):
         self.strict_mode = strict_mode
         self.__devices = []
         self.__buses = [QPCIBus('pci.0', 'pci')]
-        #self.images = QDevImages(self)
+        self.images = QDevImages(self)
         self.usbs = QDevUsbs(self)
 
     def __getitem__(self, item):
@@ -906,8 +1083,23 @@ class DevContainer(object):
         """
         return bool(re.search(r'name "%s"' % device, self.__device_help,
                               re.MULTILINE))
-    def get_system_bus(self):
-        pass
+    def get_buses(self, bus_spec):
+        buses = []
+        for bus in self.__buses:
+            for key, value in bus_spec.iteritems():
+                if not bus.__getattribute__(key) == value:
+                    break
+            else:
+                buses.append(bus)
+        return buses
+
+    def get_first_free_bus(self, bus_spec, addr):
+        buses = self.get_buses(bus_spec)
+        for bus in buses:
+            _ = bus._get_free_slot(bus._param2addr(addr))
+            if _ is not None and _ is not False:
+                return bus
+
     def insert(self, device, force=False):
         """
         1) get list of matching parent buses
@@ -935,13 +1127,7 @@ class DevContainer(object):
             device.parent_bus = (device.parent_bus,)
         for parent_bus in device.parent_bus:
             # type, aobject, busid
-            buses = []
-            for bus in self.__buses:
-                for key, value in parent_bus.iteritems():
-                    if not bus.__getattribute__(key) == value:
-                        break
-                else:
-                    buses.append(bus)
+            buses = self.get_buses(parent_bus)
             if not buses:
                 if force:
                     err += "ParentBus(%s): No matching bus\n" % parent_bus
@@ -993,6 +1179,25 @@ class DevContainer(object):
                     % (device, self, err))
         return True
 
+    def list_missing_named_buses(self, bus_name, bus_type, bus_count):
+        missing_buses = [bus_name + str(i) for i in xrange(bus_count)]
+        for bus in self.__buses:
+            if bus.type == bus_type and re.match(bus_name + '\d+', bus.busid):
+                if bus.busid in missing_buses:
+                    missing_buses.remove(bus.busid)
+        return missing_buses
+
+    def idx_of_next_named_bus(self, bus_name):
+        buses = []
+        for bus in self.__buses:
+            if bus.busid.startswith(bus_name):
+                buses.append(bus.busid)
+        i = 0
+        while True:
+            if bus_name + str(i) not in buses:
+                return i
+            i += 1
+
     def cmdline(self):
         """
         Creates cmdline arguments for creating all defined devices
@@ -1025,7 +1230,7 @@ class DevContainer(object):
 
 
 if __name__ == "__main__":
-    a = DevContainer(HELP, DEVICES, VM())
+    a = DevContainer(HELP, DEVICES, VM(), True)
     # -device ich9-usb-uhci
     """
     dev1 = QDevice(aobject='myusb1')
@@ -1056,6 +1261,7 @@ if __name__ == "__main__":
     #dev2.parent_bus = {'aobject': 'myusb1'}
     dev2.parent_bus = {'type': 'uhci'}
     print "2: %s" % a.insert(dev2)
+    """
     # -device ahci,id=ahci
     dev3 = QDevice()
     dev3.child_bus = QAHCIBus('ahci1')
@@ -1075,6 +1281,17 @@ if __name__ == "__main__":
     dev5.set_param('unit', 1)
     dev5.parent_bus = ({'type': '__QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
+    """
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ahci',
+                                        cache='none', snapshot=True, bus=2,
+                                        unit=4, port=1, bootindex=0)
+    for dev in devs:
+        print "3: %s" % a.insert(dev)
+    devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='ahci',
+                                        cache='none', snapshot=False, bus=None,
+                                        unit=None, port=None, bootindex=1)
+    for dev in devs:
+        print "4: %s" % a.insert(dev)
     print "=" * 80
     print a.str_bus_long()
     print "=" * 80
