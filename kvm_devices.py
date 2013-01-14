@@ -1,3 +1,27 @@
+"""
+What's next...
+[Bus]
+Unify Sparse and Dense buses, change function names and strictly use 3 addr
+representations:
+ 1) device: device.get(hex(addr1)), device.get(addr2), ...
+ 2) busaddr: 16 | 30-2-12 | 7-*-3
+ 3) user: (10, None, 39)
+
+ ad1) device->user by mapping addr_items to user addr as NoneOrInt
+      user->device by mapping addr to addr_items as DeviceAddrModifier (int, hex, ...)
+ ad2) busaddr->user string using '-' as separators and * as None, uses *OrInt
+ ad3) uses NoneOrInt
+"""
+"""
+[Testing]
+import sys
+sys.path.append('/home/medic/Work/AAA/autotest/tmp/my_git')
+from kvm_devices import *
+
+del(sys.modules['kvm_devices'])
+from kvm_devices import *
+"""
+
 import os
 import re
 
@@ -119,7 +143,7 @@ class QDevImages(object):
             strict_mode = self.qdev.strict_mode
         if strict_mode:
             if cache is None:       cache = "none"
-            if removable is None:   removable = "no"
+            if removable is None:   removable = "yes"
             if aio is None:         aio = "native"
             if media is None:       media = "disk"
 
@@ -164,6 +188,25 @@ class QDevImages(object):
                     bus += '.%d' % unit
             if unit is None and _bus is None:
                 bus = None  # Don't assign bus when addr=(None, None)
+        elif fmt.startswith('scsi-'):
+            _scsi_hba = scsi_hba.replace('-', '_') + '%s.0'
+            _bus = bus
+            if bus is None:
+                bus = self.qdev.get_first_free_bus({'type': scsi_hba},
+                                                   [unit, port])
+                if bus is None:
+                    bus = self.qdev.idx_of_next_named_bus(_scsi_hba)
+                else:
+                    bus = bus.busid
+            if isinstance(bus, int):
+                for bus_name in self.qdev.list_missing_named_buses(
+                                            _scsi_hba, scsi_hba, bus + 1):
+                    # TODO: Make list of ranges of various scsi_hbas.
+                    #       This is based on virtio-scsi-pci
+                    devices.append(QDevice({'id': bus_name, 'driver': scsi_hba}
+                                           , None, {'type': 'pci'},
+                                           QSCSIBus(bus_name)))
+                bus = _scsi_hba % bus
         # Drive
         # TODO: Add QRHDrive and PCIDrive for hotplug purposes
         devices.append(QDrive(name))
@@ -198,6 +241,7 @@ class QDevImages(object):
         # Device
         devices.append(QDevice({}, name))
         devices[-1].parent_bus += ({'busid': 'drive_%s' % name},)   # drive
+        devices[-1].set_param('id', name)
         devices[-1].set_param('bus', bus)
         devices[-1].set_param('drive', 'drive_%s' % name)
         devices[-1].set_param('logical_block_size', logical_block_size)
@@ -212,6 +256,13 @@ class QDevImages(object):
         if fmt == "ahci":
             devices[-1].set_param('driver', 'ide-drive')
             devices[-1].set_param('unit', port)
+        elif fmt.startswith('scsi-'):
+            devices[-1].parent_bus += ({'type': scsi_hba},)
+            devices[-1].set_param('driver', fmt)
+            devices[-1].set_param('scsi_id', unit)
+            devices[-1].set_param('lun', port)
+            if strict_mode:
+                devices[-1].set_param('channel', 0)
 
         return devices
 
@@ -352,6 +403,7 @@ class QBaseDevice(object):
 
     def readconfig(self):   # NotImplemented yet
         raise NotImplementedError
+
 
 class QStringDevice(QBaseDevice):
     """
@@ -802,6 +854,193 @@ class QDense1DBus(QBaseBus):
         return True
 
 
+class QSparseBus(QBaseBus):
+    def __init__(self, bus_item, addr_spec, busid, bus_type, aobject=None):
+        super(QSparseBus, self).__init__(busid, bus_type, aobject)
+        self.bus = {}      # Normal bus records
+        self.badbus = {}                  # Bad bus records
+        self.addr_items = addr_spec[0]      # [names][lengths]
+        self.addr_lengths = addr_spec[1]
+        self.bus_item = bus_item
+
+    def _str_devices(self):
+        out = '{'
+        for addr in sorted(self.bus.keys()):
+            out += "%s:" % addr
+            out += "%s," % self.bus[addr]
+        if out[-1] == ',':
+            out = out[:-1]
+        return out + '}'
+
+    def _str_bad_devices(self):
+        out = '{'
+        for addr in sorted(self.badbus.keys()):
+            out += "%s:" % addr
+            out += "%s," % self.badbus[addr]
+        if out[-1] == ',':
+            out = out[:-1]
+        return out + '}'
+
+    def _increment_addr(self, addr, last_addr=None):
+        if not last_addr:
+            last_addr = [0] * len(self.addr_lengths)
+        i = -1
+        while True:
+            if i < -len(self.addr_lengths):
+                return False
+            if addr[i] is not None:
+                i -= 1
+                continue
+            last_addr[i] += 1
+            if last_addr[i] < self.addr_lengths[i]:
+                return last_addr
+            last_addr[i] = 0
+            i -= 1
+
+    def _addr2str(self, addr):
+        out = ""
+        for value in addr:
+            if value is None:
+                out += '*-'
+            else:
+                out += '%s-' % value
+        if out:
+            return out[:-1]
+        else:
+            return "*"
+
+    def _dev2addr(self, device):
+        addr = []
+        for key in self.addr_items:
+            addr.append(device.get_param(key))
+        return addr
+
+    def _param2addr(self, param=None):
+        if param is None:
+            param = [None] * len(self.addr_items)
+        return param
+
+    def _get_free_slot(self, addr):
+        # init
+        use_reserved = True
+        if addr is None:
+            addr = [None] * len(self.addr_lengths)
+        # set first usable addr
+        last_addr = addr[:]
+        if None in last_addr:
+            use_reserved = False
+            for i in xrange(len(last_addr)):
+                if last_addr[i] is None:
+                    last_addr[i] = 0
+        # Check the addr ranges
+        for i in xrange(len(self.addr_lengths)):
+            if last_addr[i] < 0 or last_addr[i] >= self.addr_lengths[i]:
+                return False
+        # Increment addr until free match is found
+        while last_addr is not False:
+            if self._addr2str(last_addr) not in self.bus:
+                return last_addr
+            if use_reserved and self.bus[self._addr2str(last_addr)] == "reserved":
+                return last_addr
+            last_addr = self._increment_addr(addr, last_addr)
+        return None     # No free matching address found
+
+    def _check_bus(self, device):
+        if (device.get_param(self.bus_item) and
+                    device.get_param(self.bus_item) != self.busid):
+            return False
+        else:
+            return True
+
+    def _set_device_props(self, device, addr):
+        device.set_param(self.bus_item, self.busid)
+        for i in xrange(len(self.addr_items)):
+            device.set_param(self.addr_items[i], addr[i])
+
+    def _update_device_props(self, device, addr):
+        if device.get_param(self.bus_item):
+            device.set_param(self.bus_item, self.busid)
+        for i in xrange(len(self.addr_items)):
+            if device.get_param(self.addr_items[i]):
+                device.set_param(self.addr_items[i], addr[i])
+
+    def insert(self, device, strict_mode=False, force=False):
+        """
+        True - Success
+        False - Incorrect addr/busid
+        None - No free slot
+        string - Force add passed, returned string is message of errors
+        """
+        err = ""
+        if not self._check_bus(device):
+            if force:
+                err += "BusId, "
+                device.set_param(self.bus_item, self.busid)
+            else:
+                return False
+        _addr = self._dev2addr(device)
+        addr = self._get_free_slot(_addr)
+        if addr is None:
+            if force:
+                if _addr is None:
+                    err += "NoFreeSlot, "
+                    # FIXME: Use last addr, not first
+                    addr = [0] * len(self.addr_items)
+                    self._insert_used(device, self._addr2str(addr))
+                else:   # used slot
+                    err += "UsedSlot, "
+                    addr = _addr
+                    self._insert_used(device, self._addr2str(addr))
+            else:
+                return None
+        elif addr is False:
+            if force:
+                addr = _addr
+                err += "BadAddr(%s), " % addr
+                self._insert_oor(device, self._addr2str(addr))
+            else:
+                return False
+        else:
+            self.bus[self._addr2str(addr)] = device
+        if strict_mode:     # Always set full address in strict_mode
+            self._set_device_props(device, addr)
+        else:
+            self._update_device_props(device, addr)
+        if err:
+            # Device was force added with errors
+            err = ("Force adding device %s into %s (errors: %s)"
+                   % (device, self, err[:-2]))
+            return err
+        return True
+
+    def remove(self, device):
+        if not self._remove_good(device):
+            return self._remove_bad(device)
+        return True
+
+    def _remove_good(self, device):
+        if device in self.bus.iteritems():
+            remove = None
+            for key, item in self.bus.iteritems():
+                if item is device:
+                    remove = key
+                    break
+            if remove:
+                del(self.bus[remove])
+                return True
+        return False
+
+
+class QSCSIBus(QSparseBus):
+    def __init__(self, busid, bus_type=None, addr_spec=None, aobject=None):
+        if bus_type is None:
+            bus_type = 'virtio-scsi-pci'
+        if addr_spec is None:
+            addr_spec = [['scsi_id', 'lun'], [255, 16383]]
+        super(QSCSIBus, self).__init__('bus', addr_spec, busid, bus_type,
+                                       aobject)
+
+
 class QUSBBus(QDense1DBus):
     def __init__(self, length, busid, bus_type, aobject=None):
         # FIXME: For compatibility reasons keep the USB types uhci,ehci,...
@@ -811,6 +1050,7 @@ class QUSBBus(QDense1DBus):
                 break
         super(QUSBBus, self).__init__('bus', 'port', length, busid, bus_type,
                                       aobject)
+
 
 class QPCIBus(QDense1DBus):
     def __init__(self, busid, bus_type, aobject=None):
@@ -1179,10 +1419,12 @@ class DevContainer(object):
                     % (device, self, err))
         return True
 
-    def list_missing_named_buses(self, bus_name, bus_type, bus_count):
-        missing_buses = [bus_name + str(i) for i in xrange(bus_count)]
+    def list_missing_named_buses(self, bus_pattern, bus_type, bus_count):
+        if not "%s" in bus_pattern:
+            bus_pattern = bus_pattern + "%s"
+        missing_buses = [bus_pattern % i for i in xrange(bus_count)]
         for bus in self.__buses:
-            if bus.type == bus_type and re.match(bus_name + '\d+', bus.busid):
+            if bus.type == bus_type and re.match(bus_pattern % '\d+', bus.busid):
                 if bus.busid in missing_buses:
                     missing_buses.remove(bus.busid)
         return missing_buses
@@ -1282,14 +1524,14 @@ if __name__ == "__main__":
     dev5.parent_bus = ({'type': '__QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
     """
-    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ahci',
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='scsi-hd',
                                         cache='none', snapshot=True, bus=2,
                                         unit=4, port=1, bootindex=0)
     for dev in devs:
         print "3: %s" % a.insert(dev)
-    devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='ahci',
-                                        cache='none', snapshot=False, bus=None,
-                                        unit=None, port=None, bootindex=1)
+    devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='scsi-hd',
+                                        cache='none', snapshot=False, bus=2,
+                                        unit=4, port=None, bootindex=1)
     for dev in devs:
         print "4: %s" % a.insert(dev)
     print "=" * 80
