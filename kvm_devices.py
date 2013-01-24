@@ -1,4 +1,43 @@
 """
+Goals:
+[During vm.__qemu_cmdline()]
+  1) creates vm.devices representation
+  2) calls vm.devices.cmdline()  (or .readconfig())
+  - it could automatically assign full address (addr, scsiid, ports, ...)
+  - it could check, whether there are any problems with current configuration
+
+[In test]
+  - we could access the vm.devices representation
+    - all used params should be there
+    - bus representation
+    - verification (supersedes kvm_qtree)
+
+  - we could hotplug new devices:
+    dev = QDevice({'driver':'usb-mouse'},aobject='mouse1')
+    vm.monitor(dev.hotplug())     # + check the output
+    vm.devices.insert(dev)
+
+  - we could unplug devices:
+    dev = vm.devices.get('device_specification')
+    vm.monitor(dev.unplug())    # + check the output
+    vm.devices.remove(dev)
+
+  - we could see the devices in buses (short output)
+    Buses of vm1
+      drive_mydisk2(__QDrive): mydisk2  {}
+      drive_mydisk1(__QDrive): mydisk1  {}
+      virtio_scsi_pci2.0(virtio-scsi-pci): {4-0:mydisk2,4-1:mydisk1}  {}
+      virtio_scsi_pci1.0(virtio-scsi-pci): {}  {}
+      virtio_scsi_pci0.0(virtio-scsi-pci): {}  {}
+      myusb1.0(uhci): [None,a'usb-mouse']  {}
+      pci.0(pci): [myusb1,virtio_scsi_pci0.0,virtio_scsi_pci1.0,virtio_scsi_pci2.0,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None,None]  {}
+    - In the long output you can see the devices params etc.
+
+
+[After the test]
+  - We could compare actual state of the VM (hotplug/unplug/drivechange...)
+"""
+"""
 What's next...
 [Bus]
 Remove Dense bus and use only Sparse implementation (don't use [], use only {})
@@ -1260,7 +1299,8 @@ class DevContainer(object):
     def str_bus_short(self):
         out = "Buses of %s\n  " % self.vmname
         for bus in self.__buses:
-            out += str(bus).replace('\n', '\n  ')
+            out += str(bus)
+            out += "\n  "
         return out[:-3]
 
     def str_bus_long(self):
@@ -1515,6 +1555,7 @@ if __name__ == "__main__":
     print "=" * 80
     print a.readconfig()[1]
     print a.readconfig()[0]
+    print a.str_bus_short()
     while True:
         buf = raw_input()
         try:
