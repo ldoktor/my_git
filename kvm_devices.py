@@ -1,16 +1,12 @@
 """
 What's next...
 [Bus]
-Unify Sparse and Dense buses, change function names and strictly use 3 addr
-representations:
- 1) device: device.get(hex(addr1)), device.get(addr2), ...
- 2) busaddr: 16 | 30-2-12 | 7-*-3
- 3) user: (10, None, 39)
-
- ad1) device->user by mapping addr_items to user addr as NoneOrInt
-      user->device by mapping addr to addr_items as DeviceAddrModifier (int, hex, ...)
- ad2) busaddr->user string using '-' as separators and * as None, uses *OrInt
- ad3) uses NoneOrInt
+Remove Dense bus and use only Sparse implementation (don't use [], use only {})
+Dense addr would be still possible as the output by stepping addr._increment().
+Addresses are:
+    stor_addr = stored address representation '$first-$second-...-$ZZZ'
+    addr = internal address representation [$first, $second, ..., $ZZZ]
+    device_addr = device{$param1:$first, $param2:$second, ..., $paramZZZ, $ZZZ}
 """
 """
 [Testing]
@@ -172,7 +168,7 @@ class QDevImages(object):
             if bus is None:    # None
                 #@return: name of matching free bus | index of next bus
                 bus = self.qdev.get_first_free_bus({'type': 'ahci'},
-                                                   (unit, port))
+                                                   [unit, port])
                 if bus is None:
                     bus = self.qdev.idx_of_next_named_bus('ahci')
                 else:
@@ -189,6 +185,9 @@ class QDevImages(object):
             if unit is None and _bus is None:
                 bus = None  # Don't assign bus when addr=(None, None)
         elif fmt.startswith('scsi-'):
+            # TODO: When lun is None use 0 instead as it's not used by qemu arg
+            # parser to assign luns (when there is no place it incr scsiid
+            # in non strict_mode (strict_mode can assign any scsiid+lun
             _scsi_hba = scsi_hba.replace('-', '_') + '%s.0'
             _bus = bus
             if bus is None:
@@ -581,7 +580,7 @@ class QBaseBus(object):
         out = ""
         if hasattr(self.bus, 'iteritems'):
             for addr, dev in self.bus.iteritems():
-                out += '%s< %4s >%s\n  ' % ('-' * 15, self._addr2str(addr),
+                out += '%s< %4s >%s\n  ' % ('-' * 15, self._addr2stor(addr),
                                             '-' * 15)
                 if isinstance(dev, str):
                     out += '"%s"\n  ' % dev
@@ -592,7 +591,7 @@ class QBaseBus(object):
         elif hasattr(self.bus, '__iter__'):
             for addr in xrange(len(self.bus)):
                 dev = self.bus[addr]
-                out += '%s< %4s >%s\n  ' % ('-' * 15, self._addr2str(addr),
+                out += '%s< %4s >%s\n  ' % ('-' * 15, self._addr2stor(addr),
                                             '-' * 15)
                 if hasattr(dev, 'str_long'):
                     out += dev.str_long().replace('\n', '\n  ')
@@ -608,14 +607,14 @@ class QBaseBus(object):
             out = "%s\n" % self.bus
         return out
 
-    def _addr2str(self, addr):
+    def _addr2stor(self, addr):
         return addr
 
     def _str_bad_devices_long(self):
         out = ""
         if hasattr(self.badbus, 'iteritems'):
             for addr, dev in self.badbus.iteritems():
-                out += '%s< %4s >%s\n  ' % ('-' * 15, self._addr2str(addr),
+                out += '%s< %4s >%s\n  ' % ('-' * 15, self._addr2stor(addr),
                                             '-' * 15)
                 if isinstance(dev, str):
                     out += '"%s"\n  ' % dev
@@ -626,7 +625,7 @@ class QBaseBus(object):
         elif hasattr(self.badbus, '__iter__'):
             for addr in xrange(len(self.badbus)):
                 dev = self.badbus[addr]
-                out += '%s< %4s >%s\n  ' % ('-' * 15, self._addr2str(addr),
+                out += '%s< %4s >%s\n  ' % ('-' * 15, self._addr2stor(addr),
                                             '-' * 15)
                 if hasattr(dev, 'str_long'):
                     out += dev.str_long().replace('\n', '\n  ')
@@ -745,13 +744,13 @@ class QDense1DBus(QBaseBus):
     def _str_bad_devices(self):
         out = '{'
         for addr, device in self.badbus.iteritems():
-            out += "%s:" % self._addr2str(addr)
+            out += "%s:" % self._addr2stor(addr)
             out += "%s," % device
         if out[-1] == ',':
             out = out[:-1]
         return out + '}'
 
-    def _addr2str(self, addr):
+    def _addr2stor(self, addr):
         if addr is None:
             return None
         else:
@@ -786,13 +785,13 @@ class QDense1DBus(QBaseBus):
 
     def _set_device_props(self, device, addr):
         device.set_param(self.bus_item, self.busid)
-        device.set_param(self.addr_item, self._addr2str(addr))
+        device.set_param(self.addr_item, self._addr2stor(addr))
 
     def _update_device_props(self, device, addr):
         if device.get_param(self.bus_item):
             device.set_param(self.bus_item, self.busid)
         if device.get_param(self.addr_item):
-            device.set_param(self.addr_item, self._addr2str(addr))
+            device.set_param(self.addr_item, self._addr2stor(addr))
 
     def insert(self, device, strict_mode=False, force=False):
         """
@@ -855,13 +854,29 @@ class QDense1DBus(QBaseBus):
 
 
 class QSparseBus(QBaseBus):
+    """
+    Universal bus representation
+    used addresses:
+    stor_addr = stored address representation '$first-$second-...-$ZZZ'
+    addr = internal address representation [$first, $second, ..., $ZZZ]
+    device_addr = device{$param1:$first, $param2:$second, ..., $paramZZZ, $ZZZ}
+    """
     def __init__(self, bus_item, addr_spec, busid, bus_type, aobject=None):
-        super(QSparseBus, self).__init__(busid, bus_type, aobject)
-        self.bus = {}      # Normal bus records
-        self.badbus = {}                  # Bad bus records
+        """
+        @param bus_item: Name of the parameter which specifies bus (bus)
+        @param addr_spec: Bus address specification [names][lengths]
+        @param busid: id of the bus (pci.0)
+        @param bus_type: type of the bus (pci)
+        @param aobject: Related autotest object (image1)
+        """
+        self.busid = busid
+        self.type = bus_type
+        self.aobject = aobject
+        self.bus = {}                       # Normal bus records
+        self.badbus = {}                    # Bad bus records
+        self.bus_item = bus_item            # bus param name
         self.addr_items = addr_spec[0]      # [names][lengths]
         self.addr_lengths = addr_spec[1]
-        self.bus_item = bus_item
 
     def _str_devices(self):
         out = '{'
@@ -897,7 +912,7 @@ class QSparseBus(QBaseBus):
             last_addr[i] = 0
             i -= 1
 
-    def _addr2str(self, addr):
+    def _addr2stor(self, addr):
         out = ""
         for value in addr:
             if value is None:
@@ -915,34 +930,30 @@ class QSparseBus(QBaseBus):
             addr.append(device.get_param(key))
         return addr
 
-    def _param2addr(self, param=None):
-        if param is None:
-            param = [None] * len(self.addr_items)
-        return param
-
-    def _get_free_slot(self, addr):
+    def _get_free_slot(self, addr_pattern):
         # init
         use_reserved = True
-        if addr is None:
-            addr = [None] * len(self.addr_lengths)
-        # set first usable addr
-        last_addr = addr[:]
-        if None in last_addr:
-            use_reserved = False
+        if addr_pattern is None:
+            addr_pattern = [None] * len(self.addr_lengths)
+        # set first usable addr_pattern
+        last_addr = addr_pattern[:]
+        if None in last_addr:  # Address is not fully specified
+            use_reserved = False    # Use only free address
             for i in xrange(len(last_addr)):
                 if last_addr[i] is None:
                     last_addr[i] = 0
-        # Check the addr ranges
+        # Check the addr_pattern ranges
         for i in xrange(len(self.addr_lengths)):
             if last_addr[i] < 0 or last_addr[i] >= self.addr_lengths[i]:
                 return False
-        # Increment addr until free match is found
+        # Increment addr_pattern until free match is found
         while last_addr is not False:
-            if self._addr2str(last_addr) not in self.bus:
+            if self._addr2stor(last_addr) not in self.bus:
                 return last_addr
-            if use_reserved and self.bus[self._addr2str(last_addr)] == "reserved":
+            if (use_reserved and
+                        self.bus[self._addr2stor(last_addr)] == "reserved"):
                 return last_addr
-            last_addr = self._increment_addr(addr, last_addr)
+            last_addr = self._increment_addr(addr_pattern, last_addr)
         return None     # No free matching address found
 
     def _check_bus(self, device):
@@ -978,31 +989,31 @@ class QSparseBus(QBaseBus):
                 device.set_param(self.bus_item, self.busid)
             else:
                 return False
-        _addr = self._dev2addr(device)
-        addr = self._get_free_slot(_addr)
+        addr_pattern = self._dev2addr(device)
+        addr = self._get_free_slot(addr_pattern)
         if addr is None:
             if force:
-                if _addr is None:
+                if None in addr_pattern:
                     err += "NoFreeSlot, "
-                    # FIXME: Use last addr, not first
-                    addr = [0] * len(self.addr_items)
-                    self._insert_used(device, self._addr2str(addr))
+                    # Use last valid address for inserting the device
+                    addr = [(_ - 1) for _ in self.addr_lengths]
+                    self._insert_used(device, self._addr2stor(addr))
                 else:   # used slot
                     err += "UsedSlot, "
-                    addr = _addr
-                    self._insert_used(device, self._addr2str(addr))
+                    addr = addr_pattern  # It's fully specified addr
+                    self._insert_used(device, self._addr2stor(addr))
             else:
                 return None
         elif addr is False:
             if force:
-                addr = _addr
+                addr = addr_pattern
                 err += "BadAddr(%s), " % addr
-                self._insert_oor(device, self._addr2str(addr))
+                self._insert_oor(device, self._addr2stor(addr))
             else:
                 return False
         else:
-            self.bus[self._addr2str(addr)] = device
-        if strict_mode:     # Always set full address in strict_mode
+            self._insert_good(device, self._addr2stor(addr))
+        if strict_mode:     # Set full address in strict_mode
             self._set_device_props(device, addr)
         else:
             self._update_device_props(device, addr)
@@ -1012,6 +1023,23 @@ class QSparseBus(QBaseBus):
                    % (device, self, err[:-2]))
             return err
         return True
+
+    def _insert_good(self, device, addr):
+        self.bus[self._addr2stor(addr)] = device
+
+    def _insert_oor(self, device, addr):
+        if addr in self.badbus:
+            i = 2
+            while "%s(%dx)" % (addr, i) in self.badbus:
+                i += 1
+            addr = "%s(%dx)" % (addr, i)
+        self.badbus[addr] = device
+
+    def _insert_used(self, device, addr):
+        i = 2
+        while "%s(%dx)" % (addr, i) in self.badbus:
+            i += 1
+        self.badbus["%s(%dx)" % (addr, i)] = device
 
     def remove(self, device):
         if not self._remove_good(device):
@@ -1027,6 +1055,18 @@ class QSparseBus(QBaseBus):
                     break
             if remove:
                 del(self.bus[remove])
+                return True
+        return False
+
+    def _remove_bad(self, device):
+        if device in self.badbus.iteritems():
+            remove = None
+            for key, item in self.badbus.iteritems():
+                if item is device:
+                    remove = key
+                    break
+            if remove:
+                del(self.badbus[remove])
                 return True
         return False
 
@@ -1057,7 +1097,7 @@ class QPCIBus(QDense1DBus):
         super(QPCIBus, self).__init__('bus', 'addr', 32, busid, bus_type,
                                       aobject)
 
-    def _addr2str(self, addr):
+    def _addr2stor(self, addr):
         if addr is None:
             return None
         else:
@@ -1124,76 +1164,10 @@ class QAHCIBus(QDense1DBus):
         return None
 
     @staticmethod
-    def _addr2str(addr):
+    def _addr2stor(addr):
         if isinstance(addr, int):
             return "%s:%s" % (addr / 2, addr % 2)
         return addr
-
-
-"""
-# Incomplete...
-class QCustomBus(QBaseBus):
-    #Bus defined by dictionarry with name and range
-    def __init__(self, busid, bus_type, params, aobject=None):
-        super(QCustomBus, self).__init__(busid, bus_type, aobject)
-        self.bus = {}
-        self.badbus = []
-        self._keys = params.keys()
-        self._ranges = params.values()
-        self._mods = []
-        mod = 1
-        for i in range(len(self._ranges)[::-1]):
-            self._mods.append(mod)
-            mod *= self._ranges[i]
-        self._mods = self._mods[::-1]
-        self._max = mod
-
-    def dev2addr(self, device):
-        return [device.get_param(key) for key in self._keys]
-
-    def addr2params(self, addr):
-        if not isinstance(addr, (tuple, list)):
-            addr = (addr,)
-        params = {}
-        for i in xrange(-len(addr), 0):
-            params[self._keys[i]] = addr[i]
-        return params
-
-    def get_free_slot(self, device):
-        addr = self.dev2addr(device)
-        if not self._is_valid_addr(addr):
-            raise KeyError("Device %s sets incorrect addr for %s" % (device,
-                                                                     self))
-        _addr = []
-        for i in xrange(len(addr)):
-            if addr[i] is None:
-                _addr.append(range(0, self._ranges[i] * self._mods[i],
-                                   self._mods[i]))
-            # TODO...
-                _addr.append(addr[i])
-        while addr < self.mod:
-            variables = []
-            for i in xrange(len(addr)):
-                if addr[i] is None:
-                    variables.append(i)
-                    addr[i] = 0
-            for i in variables:
-                for j in xrange(self._ranges[i]):
-                    pass
-                    # TODO
-
-    def _is_valid_addr(self, addr):
-        for i in xrange(-len(addr), 0):
-            if addr[i] is None:
-                continue
-            if addr[i] >= self._ranges[i] or addr[i] < 0:
-                return False
-        return True
-
-    def _insert(self, device, addr):
-        if not self._is_valid_addr(addr) or addr in self.bus:
-            self.badbus.append((addr, device))
-"""
 
 
 class DevContainer(object):
@@ -1336,7 +1310,7 @@ class DevContainer(object):
     def get_first_free_bus(self, bus_spec, addr):
         buses = self.get_buses(bus_spec)
         for bus in buses:
-            _ = bus._get_free_slot(bus._param2addr(addr))
+            _ = bus._get_free_slot(addr)
             if _ is not None and _ is not False:
                 return bus
 
