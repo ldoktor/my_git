@@ -634,33 +634,15 @@ class QSparseBus(object):
     def _str_devices_long(self):
         out = ""
         # TODO: Remove all but iteritems versions
-        if hasattr(self.bus, 'iteritems'):
-            for addr, dev in self.bus.iteritems():
-                out += '%s< %4s >%s\n  ' % ('-' * 15, addr,
-                                            '-' * 15)
-                if isinstance(dev, str):
-                    out += '"%s"\n  ' % dev
-                else:
-                    out += dev.str_long().replace('\n', '\n  ')
-                    out = out[:-3]
-                out += '\n'
-        elif hasattr(self.bus, '__iter__'):
-            for addr in xrange(len(self.bus)):
-                dev = self.bus[addr]
-                out += '%s< %4s >%s\n  ' % ('-' * 15, addr,
-                                            '-' * 15)
-                if hasattr(dev, 'str_long'):
-                    out += dev.str_long().replace('\n', '\n  ')
-                    out = out[:-3]
-                elif isinstance(dev, str):
-                    out += '"%s"' % dev
-                else:
-                    out += "%s  " % dev
-                out += '\n'
-        elif hasattr(self.bus, 'str_long'):
-            out = self.bus.str_long()
-        else:
-            out = "%s\n" % self.bus
+        for addr, dev in self.bus.iteritems():
+            out += '%s< %4s >%s\n  ' % ('-' * 15, addr,
+                                        '-' * 15)
+            if isinstance(dev, str):
+                out += '"%s"\n  ' % dev
+            else:
+                out += dev.str_long().replace('\n', '\n  ')
+                out = out[:-3]
+            out += '\n'
         return out
 
     def _str_bad_devices_long(self):
@@ -740,7 +722,7 @@ class QSparseBus(object):
         else:
             return "*"
 
-    def _dev2addr(self, device):
+    def _dev2addr(self, device, strict_mode=False):
         addr = []
         for key in self.addr_items:
             addr.append(device.get_param(key))
@@ -805,7 +787,7 @@ class QSparseBus(object):
                 device.set_param(self.bus_item, self.busid)
             else:
                 return False
-        addr_pattern = self._dev2addr(device)
+        addr_pattern = self._dev2addr(device, strict_mode)
         addr = self._get_free_slot(addr_pattern)
         if addr is None:
             if force:
@@ -987,6 +969,16 @@ class QSCSIBus(QSparseBus):
         super(QSCSIBus, self).__init__('bus', addr_spec, busid, bus_type,
                                        aobject)
 
+    def _dev2addr(self, device, strict_mode=False):
+        addr = []
+        for key in self.addr_items:
+            if (not strict_mode and key == 'lun' and
+                        device.get_param(key) is None):
+                addr.append(0)  # Luns are not assigned and by default are 0
+            else:
+                addr.append(device.get_param(key))
+        return addr
+
 
 class QUSBBus(QDenseBus):
     def __init__(self, length, busid, bus_type, aobject=None):
@@ -1015,7 +1007,7 @@ class QPCIBus(QDenseBus):
         else:
             return "*"
 
-    def _dev2addr(self, device):
+    def _dev2addr(self, device, strict_mode=False):
         addr = []
         for key in self.addr_items:
             value = device.get_param(key)
@@ -1051,7 +1043,7 @@ class QAHCIBus(QDenseBus):
                 return False
         return True # None, 5, '3'
 
-    def _dev2addr(self, device):
+    def _dev2addr(self, device, strict_mode=False):
         bus = None
         unit = None
         busid = device.get_param('busid')
