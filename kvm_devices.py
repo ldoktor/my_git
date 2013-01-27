@@ -41,18 +41,7 @@ Goals:
   - We could compare actual state of the VM (hotplug/unplug/drivechange...)
 
 
-
-What's next...
-[Bus]
-Remove Dense bus and use only Sparse implementation (don't use [], use only {})
-Dense addr would be still possible as the output by stepping addr._increment().
-Addresses are:
-    stor_addr = stored address representation '$first-$second-...-$ZZZ'
-    addr = internal address representation [$first, $second, ..., $ZZZ]
-    device_addr = device{$param1:$first, $param2:$second, ..., $paramZZZ, $ZZZ}
-
-
-
+...
 [Testing]
 import sys
 sys.path.append('/home/medic/Work/AAA/autotest/tmp/my_git')
@@ -208,6 +197,37 @@ class QDevImages(object):
         """
         self.qdev = qdev
 
+    def _define_hbas(self, hba, bus, unit, port, qbus):
+        devices = []
+        if qbus == QAHCIBus:    # AHCI uses multiple ports, id is different
+            _hba = 'ahci%s'
+        else:
+            _hba = hba.replace('-', '_') + '%s.0'  # HBA id
+        _bus = bus
+        if bus is None:
+            bus = self.qdev.get_first_free_bus({'type': hba},
+                                               [unit, port])
+            if bus is None:
+                bus = self.qdev.idx_of_next_named_bus(_hba)
+            else:
+                bus = bus.busid
+        if isinstance(bus, int):
+            for bus_name in self.qdev.list_missing_named_buses(
+                                        _hba, hba, bus + 1):
+                # TODO: Make list of ranges of various scsi_hbas.
+                #       This is based on virtio-scsi-pci
+                devices.append(QDevice({'id': bus_name, 'driver': hba}
+                                       , None, {'type': 'pci'},
+                                       qbus(bus_name)))
+            bus = _hba % bus
+        if qbus == QAHCIBus and unit is None and _bus is None:
+            bus = None  # When unit is set, bus have to be also set for AHCI
+        elif qbus == QAHCIBus and unit is not None:
+            bus += ".%d" % unit
+        elif _bus is None:
+            bus = None
+        return devices, bus
+
     def define_by_variables(self, name, filename, index=None, fmt=None,
                       cache=None, werror=None, rerror=None, serial=None,
                       snapshot=None, boot=None, blkdebug=None, bus=None,
@@ -295,50 +315,16 @@ class QDevImages(object):
             # if scsi: when not free add next
             pass
         elif fmt == "ahci":
-            _bus = bus
-            if bus is None:    # None
-                #@return: name of matching free bus | index of next bus
-                bus = self.qdev.get_first_free_bus({'type': 'ahci'},
-                                                   [unit, port])
-                if bus is None:
-                    bus = self.qdev.idx_of_next_named_bus('ahci')
-                else:
-                    bus = bus.busid
-            if isinstance(bus, int):    # Bus might not yet exist
-                for bus_name in self.qdev.list_missing_named_buses('ahci',
-                                                        'ahci', bus + 1):
-                    devices.append(QDevice({'id': bus_name, 'driver': 'ahci'},
-                                           None, {'type': 'pci'},
-                                           QAHCIBus(bus_name, name)))
-                bus = 'ahci%d' % bus
-                if unit is not None:
-                    bus += '.%d' % unit
-            if unit is None and _bus is None:
-                bus = None  # Don't assign bus when addr=(None, None)
+            devs, bus = self._define_hbas('ahci', bus, unit, port, QAHCIBus)
+            devices.extend(devs)
         elif fmt.startswith('scsi-'):
             # TODO: When lun is None use 0 instead as it's not used by qemu arg
             # parser to assign luns (when there is no place it incr scsiid
             # in non strict_mode (strict_mode can assign any scsiid+lun
             if not scsi_hba:
                 scsi_hba = "virtio-scsi-pci"
-            _scsi_hba = scsi_hba.replace('-', '_') + '%s.0'  # HBA id
-            _bus = bus
-            if bus is None:
-                bus = self.qdev.get_first_free_bus({'type': scsi_hba},
-                                                   [unit, port])
-                if bus is None:
-                    bus = self.qdev.idx_of_next_named_bus(_scsi_hba)
-                else:
-                    bus = bus.busid
-            if isinstance(bus, int):
-                for bus_name in self.qdev.list_missing_named_buses(
-                                            _scsi_hba, scsi_hba, bus + 1):
-                    # TODO: Make list of ranges of various scsi_hbas.
-                    #       This is based on virtio-scsi-pci
-                    devices.append(QDevice({'id': bus_name, 'driver': scsi_hba}
-                                           , None, {'type': 'pci'},
-                                           QSCSIBus(bus_name)))
-                bus = _scsi_hba % bus
+            devs, bus = self._define_hbas(scsi_hba, bus, unit, port, QSCSIBus)
+            devices.extend(devs)
         # Drive
         # TODO: Add QRHDrive and PCIDrive for hotplug purposes
         devices.append(QDrive(name))
@@ -1265,7 +1251,7 @@ class QAHCIBus(QDenseBus):
         """ AHCI is compound of 6 buses, parse busid+busidx from bus """
         bus = None
         unit = None
-        busid = device.get_param('busid')
+        busid = device.get_param('bus')
         if isinstance(busid, str):
             if busid.isdigit():
                 bus = int(busid)
@@ -1646,14 +1632,14 @@ if __name__ == "__main__":
     dev5.parent_bus = ({'type': 'QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
     """
-    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='scsi-hd',
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ahci',
                                         cache='none', snapshot=True, bus=2,
                                         unit=4, port=1, bootindex=0)
     for dev1 in devs:
         print "3: %s" % a.insert(dev1)
-    devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='scsi-hd',
-                                        cache='none', snapshot=False, bus=2,
-                                        unit=4, port=None, bootindex=1)
+    devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='ahci',
+                                        cache='none', snapshot=False, bus=None,
+                                        unit=None, port=None, bootindex=1)
     for dev1 in devs:
         print "4: %s" % a.insert(dev1)
     print "=" * 80
@@ -1664,7 +1650,7 @@ if __name__ == "__main__":
     print a.readconfig()[1]
     print a.readconfig()[0]
     print a.str_bus_short()
-    while True:
+    while False:
         buf = raw_input()
         try:
             exec buf
