@@ -229,7 +229,7 @@ class QDevImages(object):
             bus += ".%d" % unit
         elif _bus is None:
             bus = None
-        return devices, bus
+        return devices, bus, {'type': hba}
 
     def define_by_variables(self, name, filename, index=None, fmt=None,
                       cache=None, werror=None, rerror=None, serial=None,
@@ -322,7 +322,8 @@ class QDevImages(object):
             # if scsi: when not free add next  (old_version_scsi)
             pass
         elif fmt == "ahci":
-            _, bus = self._define_hbas('ahci', bus, unit, port, QAHCIBus)
+            _, bus, dev_parent = self._define_hbas('ahci', bus, unit, port,
+                                                   QAHCIBus)
             devices.extend(_)
         elif fmt.startswith('scsi-'):
             # TODO: When lun is None use 0 instead as it's not used by qemu arg
@@ -330,8 +331,20 @@ class QDevImages(object):
             # in non strict_mode (strict_mode can assign any scsiid+lun
             if not scsi_hba:
                 scsi_hba = "virtio-scsi-pci"
-            _, bus = self._define_hbas(scsi_hba, bus, unit, port, QSCSIBus)
+            _, bus, dev_parent = self._define_hbas(scsi_hba, bus, unit, port,
+                                                   QSCSIBus)
             devices.extend(_)
+        elif fmt in ('usb1', 'usb2', 'usb3'):
+            if bus:
+                logging.warn('Manual set of drive_bus is not yet supported for'
+                             ' usb disk %s', name)
+                bus = None
+            if fmt == 'usb1':
+                dev_parent = {'type': 'uhci'}
+            elif fmt == 'usb2':
+                dev_parent = {'type': 'ehci'}
+            elif fmt == 'usb3':
+                dev_parent = {'type': 'xhci'}
         # Drive
         # TODO: Add QRHDrive and PCIDrive for hotplug purposes
         devices.append(QDrive(name))
@@ -368,7 +381,7 @@ class QDevImages(object):
 
         # Device
         devices.append(QDevice({}, name))
-        devices[-1].parent_bus += ({'busid': 'drive_%s' % name},)   # drive
+        devices[-1].parent_bus += ({'busid': 'drive_%s' % name}, dev_parent)
         devices[-1].set_param('id', name)
         devices[-1].set_param('bus', bus)
         devices[-1].set_param('drive', 'drive_%s' % name)
@@ -380,18 +393,18 @@ class QDevImages(object):
         if fmt != 'virtio':
             devices[-1].set_param('serial', serial)
             devices[-1].set_param('removable', removable)
-        if not fmt.startswith('scsi-'): # scsi sets hba later in the code
-            devices[-1].parent_bus += ({'type': fmt},)  # hba
         if fmt == "ahci":
             devices[-1].set_param('driver', 'ide-drive')
             devices[-1].set_param('unit', port)
         elif fmt.startswith('scsi-'):
-            devices[-1].parent_bus += ({'type': scsi_hba},)
             devices[-1].set_param('driver', fmt)
             devices[-1].set_param('scsi_id', unit)
             devices[-1].set_param('lun', port)
             if strict_mode:
                 devices[-1].set_param('channel', 0)
+        elif fmt in ('usb1', 'usb2', 'usb3'):
+            devices[-1].set_param('driver', 'usb-storage')
+            devices[-1].set_param('port', unit)
 
         return devices
 
@@ -1642,11 +1655,11 @@ if __name__ == "__main__":
     dev5.parent_bus = ({'type': 'QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
     """
-    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='scsi',
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ahci',
                                         cache='none', snapshot=True, bus=2,
                                         unit=4, port=1, bootindex=0)
     for dev1 in devs:
-        print "3: %s" % a.insert(dev1)
+        print "3: %s" % a.insert(dev1, force=True)
     devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='ahci',
                                         cache='none', snapshot=False, bus=None,
                                         unit=None, port=None, bootindex=1)
