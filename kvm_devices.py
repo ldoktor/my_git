@@ -198,6 +198,9 @@ class QDevImages(object):
         self.qdev = qdev
 
     def _define_hbas(self, hba, bus, unit, port, qbus):
+        """
+        Helper for creating HBAs of certain type.
+        """
         devices = []
         if qbus == QAHCIBus:    # AHCI uses multiple ports, id is different
             _hba = 'ahci%s'
@@ -275,6 +278,10 @@ class QDevImages(object):
         devices = []
 
         supports_device = self.qdev.has_option("device")
+        if fmt == "scsi":   # fmt=scsi force the old version of devices
+            logging.warn("'scsi' drive_format is deprecated, please use the "
+                         "new scsi-hd + lsi53c895a type for disk %s", name)
+            supports_device = False
 
         if strict_mode is None:
             strict_mode = self.qdev.strict_mode
@@ -315,16 +322,16 @@ class QDevImages(object):
             # if scsi: when not free add next
             pass
         elif fmt == "ahci":
-            devs, bus = self._define_hbas('ahci', bus, unit, port, QAHCIBus)
-            devices.extend(devs)
+            _, bus = self._define_hbas('ahci', bus, unit, port, QAHCIBus)
+            devices.extend(_)
         elif fmt.startswith('scsi-'):
             # TODO: When lun is None use 0 instead as it's not used by qemu arg
             # parser to assign luns (when there is no place it incr scsiid
             # in non strict_mode (strict_mode can assign any scsiid+lun
             if not scsi_hba:
                 scsi_hba = "virtio-scsi-pci"
-            devs, bus = self._define_hbas(scsi_hba, bus, unit, port, QSCSIBus)
-            devices.extend(devs)
+            _, bus = self._define_hbas(scsi_hba, bus, unit, port, QSCSIBus)
+            devices.extend(_)
         # Drive
         # TODO: Add QRHDrive and PCIDrive for hotplug purposes
         devices.append(QDrive(name))
@@ -345,11 +352,13 @@ class QDevImages(object):
         else:
             devices[-1].set_param('file', filename)
         if not supports_device:
+            if fmt.startswith('scsi-') and scsi_hba == 'lsi53c895a':
+                fmt = 'scsi'  # Compatibility with the new scsi
             if fmt not in ('ide', 'scsi', 'sd', 'mtd', 'floppy', 'pflash',
                            'virtio'):
                 raise virt_vm.VMDeviceNotSupportedError(self.qdev.vmname,
                                                         fmt)
-            devices[-1].set_param('if', fmt)
+            devices[-1].set_param('if', fmt)    # overwrite previously set None
             devices[-1].set_param('index', index)
             devices[-1].parent_bus += ({'type': fmt},)
             if fmt == 'virtio':
