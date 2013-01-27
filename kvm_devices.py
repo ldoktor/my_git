@@ -280,7 +280,7 @@ class QDevImages(object):
         supports_device = self.qdev.has_option("device")
         if fmt == "scsi":   # fmt=scsi force the old version of devices
             logging.warn("'scsi' drive_format is deprecated, please use the "
-                         "new scsi-hd + lsi53c895a type for disk %s", name)
+                         "new lsi_scsi type for disk %s", name)
             supports_device = False
 
         if strict_mode is None:
@@ -318,8 +318,8 @@ class QDevImages(object):
         # HBA
         if not supports_device:
             # TODO: Add bus representation as it's added automatically
-            # if ide: only 1x
-            # if scsi: when not free add next
+            # if ide: only 1x  (old_version_ide)
+            # if scsi: when not free add next  (old_version_scsi)
             pass
         elif fmt == "ahci":
             _, bus = self._define_hbas('ahci', bus, unit, port, QAHCIBus)
@@ -360,10 +360,11 @@ class QDevImages(object):
                                                         fmt)
             devices[-1].set_param('if', fmt)    # overwrite previously set None
             devices[-1].set_param('index', index)
-            devices[-1].parent_bus += ({'type': fmt},)
+            devices[-1].parent_bus += ({'type': 'old_version_' + fmt},)
             if fmt == 'virtio':
                 devices[-1].set_param('addr', pci_addr)
                 devices[-1].parent_bus += ({'type': 'pci'},)
+            return devices
 
         # Device
         devices.append(QDevice({}, name))
@@ -1641,7 +1642,7 @@ if __name__ == "__main__":
     dev5.parent_bus = ({'type': 'QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
     """
-    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ahci',
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='scsi',
                                         cache='none', snapshot=True, bus=2,
                                         unit=4, port=1, bootindex=0)
     for dev1 in devs:
