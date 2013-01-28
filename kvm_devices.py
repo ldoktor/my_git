@@ -346,6 +346,8 @@ class QDevImages(object):
                 dev_parent = {'type': 'ehci'}
             elif fmt == 'usb3':
                 dev_parent = {'type': 'xhci'}
+        else:
+            dev_parent = {'type': fmt}
         # Drive
         # TODO: Add QRHDrive and PCIDrive for hotplug purposes
         devices.append(QDrive(name))
@@ -375,7 +377,7 @@ class QDevImages(object):
             devices[-1].set_param('if', fmt)    # overwrite previously set None
             devices[-1].set_param('index', index)
             # TODO: Add floppy when supported
-            if fmt in ('ide', 'scsi'):      # Don't handle sd, pflash...
+            if fmt in ('ide', 'scsi', 'floppy'):  # Don't handle sd, pflash...
                 devices[-1].parent_bus += ({'type': fmt},)
             if fmt == 'virtio':
                 devices[-1].set_param('addr', pci_addr)
@@ -408,6 +410,10 @@ class QDevImages(object):
         elif fmt in ('usb1', 'usb2', 'usb3'):
             devices[-1].set_param('driver', 'usb-storage')
             devices[-1].set_param('port', unit)
+        elif fmt == 'floppy':
+            # Overwrite QDevice with QFloppy
+            devices[-1] = QFloppy(unit, 'drive_%s' % name, name,
+                                ({'busid': 'drive_%s' % name}, {'type': fmt}))
 
         return devices
 
@@ -497,6 +503,22 @@ class QBaseDevice(object):
         """ @return: object param """
         return self.params.get(option)
 
+    def __getitem__(self, option):
+        """ @return: object param """
+        return self.params[option]
+
+    def __delitem__(self, option):
+        """ deletes self.params[option] """
+        del(self.params[option])
+
+    def __len__(self):
+        """ length of self.params """
+        return len(self.params)
+
+    def __setitem__(self, option, value):
+        """ self.set_param(option, value, None) """
+        return self.set_param(option, value)
+
     def __contains__(self, option):
         """ Is the option set? """
         return option in self.params
@@ -576,7 +598,7 @@ class QStringDevice(QBaseDevice):
         @param dev_type: type of this component
         @param params: component's parameters
         @param aobject: Autotest object which is associated with this device
-        @param parent_bus:
+        @param parent_bus: bus(es), in which this device is plugged in
         @param child_bus: bus, which this device provides
         @param cmdline: cmdline string
         @param hotplug: hotplug string
@@ -725,6 +747,62 @@ class QDrive(QCustomDevice):
         """ @return: monitor command to unplug this device """
         if self.get_qid():
             return "drive_del %s" % self.get_qid()
+
+
+class QGlobal(QBaseDevice):
+    """
+    Representation of qemu global setting (-global driver.property=value)
+    """
+    def __init__(self, driver, prop, value, aobject=None,
+                 parent_bus=(), child_bus=()):
+        """
+        @param driver: Which global driver to set
+        @param prop: Which property to set
+        @param value: What's the desired value
+        @param params: component's parameters
+        @param aobject: Autotest object which is associated with this device
+        @param parent_bus: bus(es), in which this device is plugged in
+        @param child_bus: bus, which this device provides
+        """
+        params = {'driver': driver, 'property': prop, 'value': value}
+        super(QGlobal, self).__init__('global', params, aobject,
+                                      parent_bus, child_bus)
+
+    def cmdline(self):
+        return "-global %s.%s=%s" % (self['driver'], self['property'],
+                                     self['value'])
+
+    def readconfig(self):
+        return ('[global]\n  driver = "%s"\n  property = "%s"\n  value = "%s"'
+                '\n' % (self['driver'], self['property'], self['value']))
+
+
+# TODO: Use None instead of () for parent_bus and child_bus
+class QFloppy(QGlobal):
+    """
+    Imitation of qemu floppy disk defined by -global isa-fdc.drive?=$drive
+    """
+    def __init__(self, unit=None, drive=None, aobject=None, parent_bus=(),
+                 child_bus=()):
+        """
+        @param unit: Floppy unit (None, 0, 1 or driveA, driveB)
+        @param drive: id of drive
+        @param aobject: Autotest object which is associated with this device
+        @param parent_bus: bus(es), in which this device is plugged in
+        @param child_bus: bus(es), which this device provides
+        """
+        super(QFloppy, self).__init__('isa-fdc', unit, drive, aobject,
+                                      parent_bus, child_bus)
+
+    def set_param(self, option, value, option_type=None):
+        """
+        drive and unit params have to be 'translated' as value and property.
+        """
+        if option == 'drive':
+            option = 'value'
+        elif option == 'unit':
+            option = 'property'
+        super(QFloppy, self).set_param(option, value, option_type)
 
 
 class QSparseBus(object):
@@ -1091,7 +1169,7 @@ class QDriveBus(QSparseBus):
 
     def _update_device_props(self, device, addr):
         """ Always set -drive property, it's mandatory """
-        super(QDriveBus, self)._set_device_props(device, addr)
+        self._set_device_props(device, addr)
 
 
 class QDenseBus(QSparseBus):
@@ -1302,6 +1380,39 @@ class QIDEBus(QAHCIBus):
                                       busid, 'ide', aobject)
 
 
+class QFloppyBus(QDenseBus):
+    """
+    Floppy bus (-global isa-fdc.drive?=$drive)
+    """
+    def __init__(self, busid, aobject=None):
+        """ property <= [driveA, driveB] """
+        super(QFloppyBus, self).__init__(None, [['property'], [2]], busid,
+                                         'floppy', aobject)
+
+    @staticmethod
+    def _addr2stor(addr):
+        """ translate as drive$CHAR """
+        return "drive%s" % chr(65 + addr[0]) # 'A' + addr
+
+    def _dev2addr(self, device):
+        """ Read None, number or drive$CHAR and convert to int() """
+        addr = device.get_param('property')
+        if isinstance(addr, str):
+            if addr.startswith('drive') and len(addr) > 5:
+                addr = ord(addr[5])
+            elif addr.isdigit():
+                addr = int(addr)
+        return [addr]
+
+    def _update_device_props(self, device, addr):
+        """ Always set props """
+        self._set_device_props(device, addr)
+
+    def _set_device_props(self, device, addr):
+        """ Change value to drive{A,B,...} """
+        device.set_param('property', self._addr2stor(addr))
+
+
 class DevContainer(object):
     """
     Device container class
@@ -1346,6 +1457,10 @@ class DevContainer(object):
         @raise KeyError: In case no match was found
         """
         self.__devices.remove(self[item])
+
+    def __len__(self):
+        """ @return: Number of inserted devices """
+        return len(self.__devices)
 
     def __contains__(self, item):
         """
@@ -1619,7 +1734,8 @@ if __name__ == "__main__":
     a = DevContainer(HELP, DEVICES, VM(), False)
     # Add default devices
     a.insert(QStringDevice('qemu', cmdline='qemu-kvm'))
-    a.insert(QStringDevice('ide', child_bus=QIDEBus('ide'))) # ide bus
+    a.insert(QStringDevice('ide', child_bus=QIDEBus('ide')))  # ide bus
+    a.insert(QStringDevice('fdc', child_bus=QFloppyBus('floppy')))  # floppyBus
     # -device ich9-usb-uhci
     """
     dev1 = QDevice(aobject='myusb1')
@@ -1671,7 +1787,7 @@ if __name__ == "__main__":
     dev5.parent_bus = ({'type': 'QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
     """
-    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ide',
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='floppy',
                                         cache='none', snapshot=True, bus=0,
                                         unit=1, port=1, bootindex=0)
     for dev1 in devs:
