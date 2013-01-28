@@ -794,6 +794,9 @@ class QFloppy(QGlobal):
         super(QFloppy, self).__init__('isa-fdc', unit, drive, aobject,
                                       parent_bus, child_bus)
 
+    def _get_alternative_name(self):
+        return "floppy-%s" % (self.get_param('property'))
+
     def set_param(self, option, value, option_type=None):
         """
         drive and unit params have to be 'translated' as value and property.
@@ -1319,29 +1322,34 @@ class QPCIBus(QDenseBus):
         return addr
 
 
-class QAHCIBus(QDenseBus):
-    """
-    AHCI bus representation.
-    """
-    def __init__(self, busid, aobject=None):
-        """ 6xbus & 2xunit """
-        super(QAHCIBus, self).__init__('bus', [['bus', 'unit'], [6, 2]],
-                                       busid, 'ahci', aobject)
+class QBusUnitBus(QDenseBus):
+    """ Implementation of bus-unit bus (ahci, ide) """
+    def __init__(self, busid, bus_type, lengths, aobject=None):
+        """
+        @param busid: id of the bus (mybus.0)
+        @param bus_type: type of the bus (ahci)
+        @param lenghts: lenghts of [buses, units]
+        @param aobject: Related autotest object (image1)
+        """
+        if len(lengths) != 2:
+            raise ValueError("len(lenghts) have to be 2 (%s)" % self)
+        super(QBusUnitBus, self).__init__('bus', [['bus', 'unit'], lengths],
+                                          busid, bus_type, aobject)
 
     def _update_device_props(self, device, addr):
-        """ AHCI is compound of 6 buses, update properties is handled here """
+        """ This bus is compound of m-buses + n-units, update properties """
         if device.get_param('bus'):
             device.set_param('bus', "%s.%s" % (self.busid, addr[0]))
         if device.get_param('unit'):
             device.set_param('unit', addr[1])
 
     def _set_device_props(self, device, addr):
-        """ AHCI is compound of 6 buses, properties setting is handled here """
+        """This bus is compound of m-buses + n-units, set properties """
         device.set_param('bus', "%s.%s" % (self.busid, addr[0]))
         device.set_param('unit', addr[1])
 
     def _check_bus(self, device):
-        """ AHCI is compound of 6 buses, bus check is more advanced.. """
+        """ This bus is compound of m-buses + n-units, check correct busid """
         bus = device.get_param('bus')
         if isinstance(bus, str):
             bus = bus.rsplit('.', 1)
@@ -1352,7 +1360,7 @@ class QAHCIBus(QDenseBus):
         return True # None, 5, '3'
 
     def _dev2addr(self, device):
-        """ AHCI is compound of 6 buses, parse busid+busidx from bus """
+        """ This bus is compound of m-buses + n-units, parse addr from dev """
         bus = None
         unit = None
         busid = device.get_param('bus')
@@ -1370,14 +1378,19 @@ class QAHCIBus(QDenseBus):
         return [bus, unit]
 
 
-class QIDEBus(QAHCIBus):
-    """
-    IDE bus (piix3-ide)
-    """
+
+class QAHCIBus(QBusUnitBus):
+    """ AHCI bus (ich9-ahci, ahci) """
+    def __init__(self, busid, aobject=None):
+        """ 6xbus, 2xunit """
+        super(QAHCIBus, self).__init__(busid, 'ahci', [6, 2], aobject)
+
+
+class QIDEBus(QBusUnitBus):
+    """ IDE bus (piix3-ide) """
     def __init__(self, busid, aobject=None):
         """ 2xbus, 2xunit """
-        super(QAHCIBus, self).__init__('bus', [['bus', 'unit'], [2, 2]],
-                                      busid, 'ide', aobject)
+        super(QIDEBus, self).__init__(busid, 'ide', [2, 2], aobject)
 
 
 class QFloppyBus(QDenseBus):
@@ -1787,7 +1800,7 @@ if __name__ == "__main__":
     dev5.parent_bus = ({'type': 'QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
     """
-    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='floppy',
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ahci',
                                         cache='none', snapshot=True, bus=0,
                                         unit=1, port=1, bootindex=0)
     for dev1 in devs:
