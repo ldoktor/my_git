@@ -302,13 +302,13 @@ class QDevImages(object):
         # Compatibility with old params - scsiid, lun
         if unit is None:
             if scsiid is not None:
-                logging.warn("scsiid param of disk %s is deprecated, use unit "
-                             "instead", name)
+                logging.warn("drive_scsiid param of disk %s is deprecated, use"
+                             " drive_unit instead", name)
             unit = none_or_int(scsiid)
         if port is None:
             if lun is not None:
-                logging.warn("lun param of disk %s is deprecated, use port "
-                             "instead", name)
+                logging.warn("drive_lun param of disk %s is deprecated, use "
+                             " drive_port instead", name)
             port = none_or_int(lun)
 
         # fmt: ide, scsi, virtio, scsi-hd, ahci, usb1,2,3 + hba
@@ -336,8 +336,8 @@ class QDevImages(object):
             devices.extend(_)
         elif fmt in ('usb1', 'usb2', 'usb3'):
             if bus:
-                logging.warn('Manual set of drive_bus is not yet supported for'
-                             ' usb disk %s', name)
+                logging.warn('Manual setting of drive_bus is not yet supported'
+                             ' for usb disk %s', name)
                 bus = None
             if fmt == 'usb1':
                 dev_parent = {'type': 'uhci'}
