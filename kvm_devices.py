@@ -314,9 +314,14 @@ class QDevImages(object):
         # HBA
         if not supports_device:
             # TODO: Add bus representation as it's added automatically
-            # if ide: only 1x  (old_version_ide)
-            # if scsi: when not free add next  (old_version_scsi)
+            # if scsi: when not free add next  (scsi)
             pass
+        elif fmt == "ide":
+            if bus:
+                logging.warn('ide supports only 1 hba, use drive_unit to set'
+                             'ide.* for disk %s', name)
+            bus = unit
+            dev_parent = {'type': 'ide'}
         elif fmt == "ahci":
             _, bus, dev_parent = self._define_hbas('ahci', bus, unit, port,
                                                    QAHCIBus)
@@ -369,7 +374,9 @@ class QDevImages(object):
                                                         fmt)
             devices[-1].set_param('if', fmt)    # overwrite previously set None
             devices[-1].set_param('index', index)
-            devices[-1].parent_bus += ({'type': 'old_version_' + fmt},)
+            # TODO: Add floppy when supported
+            if fmt in ('ide', 'scsi'):      # Don't handle sd, pflash...
+                devices[-1].parent_bus += ({'type': fmt},)
             if fmt == 'virtio':
                 devices[-1].set_param('addr', pci_addr)
                 devices[-1].parent_bus += ({'type': 'pci'},)
@@ -389,7 +396,7 @@ class QDevImages(object):
         if fmt != 'virtio':
             devices[-1].set_param('serial', serial)
             devices[-1].set_param('removable', removable)
-        if fmt == "ahci":
+        if fmt in ("ide", "ahci"):
             devices[-1].set_param('driver', 'ide-drive')
             devices[-1].set_param('unit', port)
         elif fmt.startswith('scsi-'):
@@ -1285,6 +1292,16 @@ class QAHCIBus(QDenseBus):
         return [bus, unit]
 
 
+class QIDEBus(QAHCIBus):
+    """
+    IDE bus (piix3-ide)
+    """
+    def __init__(self, busid, aobject=None):
+        """ 2xbus, 2xunit """
+        super(QAHCIBus, self).__init__('bus', [['bus', 'unit'], [2, 2]],
+                                      busid, 'ide', aobject)
+
+
 class DevContainer(object):
     """
     Device container class
@@ -1590,7 +1607,7 @@ class DevContainer(object):
             if device.readconfig():
                 out[0] += "%s\n\n" % device.readconfig()
             elif device.cmdline():
-                out[1] += "%s  "
+                out[1] += "%s  " % device.cmdline()
         if out[0]:
             out[0] = out[0][:-2]
         if out[1]:
@@ -1600,6 +1617,9 @@ class DevContainer(object):
 
 if __name__ == "__main__":
     a = DevContainer(HELP, DEVICES, VM(), False)
+    # Add default devices
+    a.insert(QStringDevice('qemu', cmdline='qemu-kvm'))
+    a.insert(QStringDevice('ide', child_bus=QIDEBus('ide'))) # ide bus
     # -device ich9-usb-uhci
     """
     dev1 = QDevice(aobject='myusb1')
@@ -1651,9 +1671,9 @@ if __name__ == "__main__":
     dev5.parent_bus = ({'type': 'QDrive', 'aobject': 'stg1'}, {'type': 'ahci'})
     print "5: %s" % a.insert(dev5)
     """
-    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ahci',
-                                        cache='none', snapshot=True, bus=2,
-                                        unit=4, port=1, bootindex=0)
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='ide',
+                                        cache='none', snapshot=True, bus=0,
+                                        unit=1, port=1, bootindex=0)
     for dev1 in devs:
         print "3: %s" % a.insert(dev1, force=True)
     devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='ahci',
@@ -1666,7 +1686,7 @@ if __name__ == "__main__":
     print "=" * 80
     print a.cmdline()
     print "=" * 80
-    print a.readconfig()[1]
+    print "# %s" % a.readconfig()[1]
     print a.readconfig()[0]
     print a.str_bus_short()
     while False:
