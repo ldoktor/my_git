@@ -223,12 +223,8 @@ class QDevImages(object):
                                        , None, {'type': 'pci'},
                                        qbus(bus_name)))
             bus = _hba % bus
-        if qbus == QAHCIBus and unit is None and _bus is None:
-            bus = None  # When unit is set, bus have to be also set for AHCI
-        elif qbus == QAHCIBus and unit is not None:
+        if qbus == QAHCIBus and unit is not None:
             bus += ".%d" % unit
-        elif _bus is None:
-            bus = None
         return devices, bus, {'type': hba}
 
     def define_by_variables(self, name, filename, index=None, fmt=None,
