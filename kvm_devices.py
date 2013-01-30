@@ -308,6 +308,10 @@ class QDevImages(object):
             logging.warn("drive_lun param is obsolete, use drive_port instead "
                          "(disk %s)", name)
             port = none_or_int(lun)
+        if pci_addr is not None and fmt == 'virtio':
+            logging.warn("drive_pci_addr is obsolete, use drive_bus instead "
+                         "(disk %s)", name)
+            bus = none_or_int(pci_addr)
 
         # fmt: ide, scsi, virtio, scsi-hd, ahci, usb1,2,3 + hba
         # device: ide-drive, usb-storage, scsi-hd, scsi-cd, virtio-blk-pci
@@ -360,6 +364,8 @@ class QDevImages(object):
                 dev_parent = {'type': 'ehci'}
             elif fmt == 'usb3':
                 dev_parent = {'type': 'xhci'}
+        elif fmt == 'virtio':
+            dev_parent = {'type': 'pci'}
         else:
             dev_parent = {'type': fmt}
         # Drive
@@ -408,8 +414,8 @@ class QDevImages(object):
         devices[-1].set_param('min_io_size', min_io_size)
         devices[-1].set_param('opt_io_size', opt_io_size)
         devices[-1].set_param('bootindex', bootindex)
+        devices[-1].set_param('serial', serial)
         if fmt != 'virtio':
-            devices[-1].set_param('serial', serial)
             devices[-1].set_param('removable', removable)
         if fmt in ("ide", "ahci"):
             devices[-1].set_param('driver', 'ide-drive')
@@ -420,6 +426,10 @@ class QDevImages(object):
             devices[-1].set_param('lun', port)
             if strict_mode:
                 devices[-1].set_param('channel', 0)
+        elif fmt == 'virtio':
+            devices[-1].set_param('driver', 'virtio-blk-pci')
+            if bus is not None:
+                devices[-1].set_param('addr', hex(bus))
         elif fmt in ('usb1', 'usb2', 'usb3'):
             devices[-1].set_param('driver', 'usb-storage')
             devices[-1].set_param('port', unit)
@@ -427,6 +437,9 @@ class QDevImages(object):
             # Overwrite QDevice with QFloppy
             devices[-1] = QFloppy(unit, 'drive_%s' % name, name,
                                 ({'busid': 'drive_%s' % name}, {'type': fmt}))
+        else:
+            logging.warn('Using default device handling (disk %s)', name)
+            devices[-1].set_param('driver', fmt)
 
         return devices
 
@@ -1451,6 +1464,7 @@ class QFloppyBus(QDenseBus):
         device.set_param('property', self._addr2stor(addr))
 
 
+# We intentionally don't define __setitem__ pylint: disable=R0924
 class DevContainer(object):
     """
     Device container class
@@ -1829,16 +1843,16 @@ if __name__ == "__main__":
     """
     for _1 in xrange(20):
         devs = a.images.define_by_variables('disk%s' % _1, '/tmp/aaa',
-                                            fmt='scsi-hd', bus=None, unit=None,
+                                            fmt='virtio', bus=None, unit=None,
                                             port=None, scsi_hba='lsi53c895a')
         for dev1 in devs:
             print "3: %s" % a.insert(dev1, force=True)
-    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='scsi',
-                                        cache='none', snapshot=True, bus=0,
+    devs = a.images.define_by_variables('mydisk1', '/tmp/aaa', fmt='virtio',
+                                        cache='none', snapshot=True, bus=30,
                                         unit=1, port=1, bootindex=0)
     for dev1 in devs:
         print "4: %s" % a.insert(dev1, force=True)
-    devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='scsi',
+    devs = a.images.define_by_variables('mydisk2', '/tmp/bbb', fmt='virtio',
                                         cache='none', snapshot=False, bus=None,
                                         unit=None, port=None, bootindex=1)
     for dev1 in devs:
