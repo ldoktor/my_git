@@ -217,8 +217,6 @@ class QDevImages(object):
         if isinstance(bus, int):
             for bus_name in self.qdev.list_missing_named_buses(
                                         _hba, hba, bus + 1):
-                # TODO: Make list of ranges of various scsi_hbas.
-                #       This is based on virtio-scsi-pci
                 if addr_spec:
                     devices.append(QDevice({'id': bus_name, 'driver': hba},
                                            None, {'type': 'pci'},
@@ -345,9 +343,6 @@ class QDevImages(object):
                                                    QAHCIBus)
             devices.extend(_)
         elif fmt.startswith('scsi-'):
-            # TODO: When lun is None use 0 instead as it's not used by qemu arg
-            # parser to assign luns (when there is no place it incr scsiid
-            # in non strict_mode (strict_mode can assign any scsiid+lun
             if not scsi_hba:
                 scsi_hba = "virtio-scsi-pci"
             addr_spec = None
@@ -397,7 +392,6 @@ class QDevImages(object):
                                                         fmt)
             devices[-1].set_param('if', fmt)    # overwrite previously set None
             devices[-1].set_param('index', index)
-            # TODO: Add floppy when supported
             if fmt in ('ide', 'scsi', 'floppy'):  # Don't handle sd, pflash...
                 devices[-1].parent_bus += ({'type': fmt},)
             if fmt == 'virtio':
@@ -483,7 +477,7 @@ class QDevImages(object):
 class QBaseDevice(object):
     """ Base class of qemu objects """
     def __init__(self, dev_type="QBaseDevice", params=None, aobject=None,
-                 parent_bus=(), child_bus=()):
+                 parent_bus=None, child_bus=None):
         """
         @param dev_type: type of this component
         @param params: component's parameters
@@ -494,7 +488,11 @@ class QBaseDevice(object):
         self.aid = None         # unique per VM id
         self.type = dev_type    # device type
         self.aobject = aobject  # related autotest object
+        if parent_bus is None:
+            parent_bus = ()
         self.parent_bus = parent_bus    # aobject, type, busid
+        if child_bus is None:
+            child_bus = ()
         self.child_bus = child_bus      # bus provided by this device
         self.params = {}
         if params:
@@ -615,7 +613,7 @@ class QStringDevice(QBaseDevice):
       "%(type)s,id=%(id)s,addr=%(addr)s" -- params will be used to subst %()s
     """
     def __init__(self, dev_type, params=None, aobject=None,
-                 parent_bus=(), child_bus=(), cmdline="", hotplug="",
+                 parent_bus=None, child_bus=None, cmdline="", hotplug="",
                  unplug="", readconfig=""):
         """
         @param dev_type: type of this component
@@ -675,7 +673,7 @@ class QCustomDevice(QBaseDevice):
     This representation handles only cmdline and readconfig outputs.
     """
     def __init__(self, dev_type, params=None, aobject=None,
-                 parent_bus=(), child_bus=()):
+                 parent_bus=None, child_bus=None):
         """
         @param dev_type: The desired -$option parameter (device, chardev, ..)
         """
@@ -709,8 +707,8 @@ class QDevice(QCustomDevice):
     Representation of the '-device' qemu object. It supports all methods.
     @note: Use driver format in full form - 'driver' = '...' (usb-ehci, ide-hd)
     """
-    def __init__(self, params=None, aobject=None, parent_bus=(),
-                 child_bus=()):
+    def __init__(self, params=None, aobject=None, parent_bus=None,
+                 child_bus=None):
         super(QDevice, self).__init__("device", params, aobject, parent_bus,
                                       child_bus)
 
@@ -777,7 +775,7 @@ class QGlobal(QBaseDevice):
     Representation of qemu global setting (-global driver.property=value)
     """
     def __init__(self, driver, prop, value, aobject=None,
-                 parent_bus=(), child_bus=()):
+                 parent_bus=None, child_bus=None):
         """
         @param driver: Which global driver to set
         @param prop: Which property to set
@@ -800,13 +798,12 @@ class QGlobal(QBaseDevice):
                 '\n' % (self['driver'], self['property'], self['value']))
 
 
-# TODO: Use None instead of () for parent_bus and child_bus
 class QFloppy(QGlobal):
     """
     Imitation of qemu floppy disk defined by -global isa-fdc.drive?=$drive
     """
-    def __init__(self, unit=None, drive=None, aobject=None, parent_bus=(),
-                 child_bus=()):
+    def __init__(self, unit=None, drive=None, aobject=None, parent_bus=None,
+                 child_bus=None):
         """
         @param unit: Floppy unit (None, 0, 1 or driveA, driveB)
         @param drive: id of drive
