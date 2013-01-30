@@ -519,13 +519,11 @@ class QBaseDevice(object):
         """
         if option is None:
             return
-        if option_type is bool:
+        if option_type is bool or isinstance(value, bool):
             if value in ['yes', 'on', True]:
                 self.params[option] = "on"
             elif value in ['no', 'off', False]:
                 self.params[option] = "off"
-        elif value and isinstance(value, bool):
-            self.params[option] = "on"
         elif value or value == 0:
             self.params[option] = value
         elif value is None and option in self.params:
@@ -1344,6 +1342,8 @@ class QPCIBus(QDenseBus):
             value = device.get_param(key)
             if value is None:
                 addr.append(None)
+            elif isinstance(value, int):
+                addr.append(value)
             else:
                 addr.append(int(value, 16))
         return addr
@@ -1785,9 +1785,11 @@ class DevContainer(object):
 
 
 if __name__ == "__main__":
-    a = DevContainer(HELP, DEVICES, VM(), True)
+    a = DevContainer(HELP, DEVICES, VM(), False)
     # Add default devices
     a.insert(QStringDevice('qemu', cmdline='qemu-kvm'))
+    a.insert(QStringDevice('i440FX', {'addr': 0}, parent_bus={'type': 'pci'}))
+    a.insert(QStringDevice('PIIX3', {'addr': 1}, parent_bus={'type': 'pci'}))
     a.insert(QStringDevice('ide', child_bus=QIDEBus('ide')))  # ide bus
     a.insert(QStringDevice('fdc', child_bus=QFloppyBus('floppy')))  # floppyBus
     # -device ich9-usb-uhci
