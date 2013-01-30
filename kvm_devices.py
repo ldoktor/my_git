@@ -62,12 +62,12 @@ DEVICES = os.popen('qemu-kvm -device ? 2>&1').read()
 
 def none_or_int(value):
     """ Helper fction which returns None or int() """
-    if not value:   # "", None, False
+    if isinstance(value, int):
+        return value
+    elif not value:   # "", None, False
         return None
     elif isinstance(value, str) and value.isdigit():
         return int(value)
-    elif isinstance(value, int):
-        return value
     else:
         raise TypeError("This parameter have to be number or none")
 
@@ -300,15 +300,13 @@ class QDevImages(object):
         unit = none_or_int(unit)   # Second level
         port = none_or_int(port)   # Third level
         # Compatibility with old params - scsiid, lun
-        if unit is None:
-            if scsiid is not None:
-                logging.warn("drive_scsiid param of disk %s is deprecated, use"
-                             " drive_unit instead", name)
+        if scsiid is not None:
+            logging.warn("drive_scsiid param is obsolete, use drive_unit "
+                         "instead (disk %s)", name)
             unit = none_or_int(scsiid)
-        if port is None:
-            if lun is not None:
-                logging.warn("drive_lun param of disk %s is deprecated, use "
-                             " drive_port instead", name)
+        if lun is not None:
+            logging.warn("drive_lun param is obsolete, use drive_port instead "
+                         "(disk %s)", name)
             port = none_or_int(lun)
 
         # fmt: ide, scsi, virtio, scsi-hd, ahci, usb1,2,3 + hba
@@ -1336,6 +1334,17 @@ class QPCIBus(QDenseBus):
             else:
                 addr.append(int(value, 16))
         return addr
+
+    def _set_device_props(self, device, addr):
+        """ Convert addr to hex """
+        print addr
+        addr = [hex(_) for _ in addr]
+        super(QPCIBus, self)._set_device_props(device, addr)
+
+    def _update_device_props(self, device, addr):
+        """ Convert addr to hex """
+        addr = [hex(_) for _ in addr]
+        super(QPCIBus, self)._update_device_props(device, addr)
 
 
 class QBusUnitBus(QDenseBus):
